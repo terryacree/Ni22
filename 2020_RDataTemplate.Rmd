@@ -1,0 +1,151 @@
+---
+title: "Data Template"
+author: "Terry & Leto"
+date: "20200128"
+output:
+  word_document: default
+  html_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(dev="png", 
+               dev.args=list(type="cairo"),
+               dpi=600)
+#install.packages ("tidyverse")
+#install.packages("vctrs")
+#install.packages("pillar")
+#install.packages("readxl")
+#install.packages("PKNCA")
+#install.packages("ggrepel")
+#install.packages("plotrix")
+#install.packages("gtools")
+#install.packages("gridExtra")
+#install.packages("pwr")
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(MASS)
+library(dplyr)
+library(PKNCA)
+library(ggrepel)
+library(plotrix)
+library(gtools)
+library(gridExtra)
+library(pwr)
+library(lme4)
+library(lmerTest)
+```
+
+```{r data setup, echo = FALSE}
+#Change the filepath to yours
+filename <- "[your filename here]"
+
+label <- tail(strsplit(filename,split="/")[[1]],1)
+
+tang <- read_excel(filename)
+
+
+tang_n<- tang %>% group_by(LogConR) %>%
+  count(LogConR)
+N <- tang_n[,2]
+
+tang_c<- tang %>% group_by(LogConR) %>%
+  summarise(Success = sum(Resp))%>%
+  cbind(N)%>%
+  mutate(Failure =n-Success, Prob=Success/n)
+
+#Modeling
+m1<-glm(Resp~ LogConR, data=tang, family="binomial")
+summary(m1)
+m2<-glm(cbind(Success, Failure)~ LogConR, data=tang_c, family="quasibinomial")
+summary(m2)
+```
+
+```{r calibration, echo = FALSE}
+#dose.p(m1, cf=1:2, p=0.50)
+
+calibrate <-expand.grid(Prob=seq(0.05,0.95,0.01))
+calibrate$LogConR<-NA
+calibrate$se<-NA
+for (i in 1:nrow(calibrate)){
+  calibrate$se[i]<-attributes(dose.p(m2, cf=1:2, p=calibrate$Prob[i]))$SE[,1]
+  calibrate$LogConR[i]<-dose.p(m2, cf=1:2, p=calibrate$Prob[i])[1]
+  #print(i)
+}
+```
+
+```{r tang_d, echo = FALSE}
+tang_d <- calibrate
+tang_d$min <- NA
+tang_d$max <- NA
+for (i in 1:nrow(tang_d)){
+  tang_d$min[i] <- (tang_d$LogConR[i] - tang_d$se[i])
+  tang_d$max[i] <- (tang_d$LogConR[i] + tang_d$se[i])
+}
+```
+
+```{r dose, echo = FALSE}
+dose_a <- dose.p(m2, cf=1:2, p=0.01)
+a1 <- dose_a[1]
+dose_aSE <- data.frame(attributes(dose_a))
+a2 <- dose_aSE[2]
+
+
+dose_b <-dose.p(m2, cf=1:2, p=0.99)
+b1 <- dose_b[1]
+dose_bSE <- data.frame(attributes(dose_b))
+b2 <- dose_bSE[2]
+
+tang_e <- rbind(tang_d, list(0.01, a1, a2, (a1 - a2), (a1 + a2)))
+tang_e <- rbind(tang_e, list(0.99, b1, b2, (b1 - b2), (b1 + b2)))
+
+tang_e$LogConR <- as.numeric(tang_e$LogConR)
+tang_e$min <- as.numeric(tang_e$min)
+tang_e$max <- as.numeric(tang_e$max)
+tang_e$se <- as.numeric(tang_e$se)
+```
+
+```{r variables, echo = FALSE}
+f <- tang_e[46,2]
+g <- 10^f
+
+g <- roundString(g, 3)
+h <- roundString(10^(2*(tang_e$se[46])), 3)
+
+#g is your  Prob = 0.5 point, your threshold or EOR
+#h is your 95% confidence interval at P = 0.5
+
+v <- "\u00B1"
+g2 <- paste(g, substr(v, 1, 1), h)
+```
+
+```{r tang_f, echo = FALSE}
+tang_f <- tang_e
+
+w <- tang_f[93, 1] #prob
+e <- tang_f[93, 2] #LogConR
+r <- tang_f[93, 3] #se
+t <- tang_f[93, 5] #max
+
+
+tang_f <- rbind(tang_f, list(w, e, r, t, t))
+```
+
+```{r figure, echo = FALSE}
+ggplot(tang_c, aes(x=LogConR, y=Prob))+
+   geom_area(tang_f, mapping = aes(x = (2*(min - LogConR) + LogConR), y = Prob), fill = "grey", alpha = 0.5)+
+  geom_area(tang_e, mapping = aes(x = (2*(max - LogConR) + LogConR), y = Prob), fill = "white")+
+  geom_point(data = tang_c)+
+  geom_smooth(data = tang_c, method = "glm", method.args = list(family="quasibinomial"), color = "black", size = 0.25, se = F) +
+  geom_errorbarh(data=tang_e, aes(y=Prob[46], xmax=LogConR[46]+2*se[46], xmin=LogConR[46]-2*se[46]), height=0.05, size= 0.125) +
+  geom_segment(aes(x = f, y = 0, xend = f, yend = 0.5), linetype = "dotted")+
+  ylab("P(Detecting Odorant)")+
+  xlab("Log[Odorant]")+
+  ggtitle(label, g2)+
+  theme_linedraw()+
+  theme(panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
